@@ -3,4 +3,3 @@ openai
 python-docx
 openpyxl
 pandas
-requests
