@@ -1,4 +1,6 @@
-
+# =============================================
+# 1. ИМПОРТЫ И НАСТРОЙКА
+# =============================================
 import os
 import re
 import json
@@ -11,21 +13,24 @@ from docx import Document
 from openpyxl import load_workbook
 from openai import OpenAI
 
+# =============================================
+# 2. ПОЛУЧЕНИЕ API-КЛЮЧА (из секретов Hugging Face)
+# =============================================
 try:
     CLOUD_RU_API_KEY = st.secrets["CLOUD_RU_API_KEY"]
 except:
     CLOUD_RU_API_KEY = None
 
+# =============================================
+# 3. АВТООПРЕДЕЛЕНИЕ КОЛОНОК
+# =============================================
 def detect_text_column(headers: List[str], df_sample: pd.DataFrame) -> Optional[str]:
-    """
-    Определяет, какая колонка содержит основной текст.
-    Приоритет: ключевые слова в заголовке, затем наибольшая средняя длина строк.
-    """
     keywords = [
         "propertyvalue", "описание", "жалобы", "анамнез", "заключение",
         "текст", "anamnesis", "complaints", "diagnosis", "text",
         "описание случая", "жалобы при поступлении", "жалобы пациента",
-        "анамнез заболевания", "notes", "history", "description"
+        "анамнез заболевания", "notes", "history", "description",
+        "симптомы", "диагноз", "пациент", "жалобы", "медицинские записи"
     ]
     for col in headers:
         col_lower = col.lower().strip()
@@ -53,9 +58,6 @@ def detect_text_column(headers: List[str], df_sample: pd.DataFrame) -> Optional[
     return None
 
 def detect_id_column(headers: List[str], df_sample: pd.DataFrame, text_col: Optional[str] = None) -> Optional[str]:
-    """
-    Определяет колонку с идентификатором пациента.
-    """
     keywords = ["id", "номер", "код", "patient", "propertyid", "case", "идентификатор"]
     for col in headers:
         col_lower = col.lower().strip()
@@ -73,6 +75,9 @@ def detect_id_column(headers: List[str], df_sample: pd.DataFrame, text_col: Opti
             return max(unique_counts, key=unique_counts.get)
     return None
 
+# =============================================
+# 4. ФУНКЦИИ ЧТЕНИЯ ФАЙЛОВ (с автоопределением)
+# =============================================
 def read_docx(file_path: str, text_col: Optional[str] = None, id_col: Optional[str] = None) -> List[Dict]:
     doc = Document(file_path)
     records = []
@@ -187,7 +192,9 @@ def load_folder(folder_path: str, text_col: Optional[str] = None, id_col: Option
             all_records.extend(read_txt(file_path))
     return all_records
 
-
+# =============================================
+# 5. АДАПТЕР ДЛЯ CLOUD.RU
+# =============================================
 class CloudRuAdapter:
     def __init__(self, model: str = "Qwen/Qwen3-30B-A3B", api_key: str = None, timeout: int = 300):
         self.model = model
@@ -215,7 +222,9 @@ class CloudRuAdapter:
         )
         return response.choices[0].message.content
 
-
+# =============================================
+# 6. ИЗВЛЕЧЕНИЕ ПАР (термин → значение)
+# =============================================
 def extract_pairs(text: str, llm) -> list:
     if len(text) > 1500:
         text = text[:1500] + "..."
@@ -236,7 +245,8 @@ def extract_pairs(text: str, llm) -> list:
     content = content.strip().removeprefix("```json").removesuffix("```").strip()
     try:
         data = json.loads(content)
-    except json.JSONDecodeError:
+    except:
+        # Если JSON невалидный, пытаемся извлечь массив через регулярку
         match = re.search(r'\[.*\]', content, re.DOTALL)
         if match:
             try:
@@ -251,6 +261,9 @@ def extract_pairs(text: str, llm) -> list:
         data = []
     return data
 
+# =============================================
+# 7. ДОБАВЛЕНИЕ ХАРАКТЕРИСТИК
+# =============================================
 def enrich_with_characteristics(pairs: list, llm) -> list:
     unique_values = set(val for _, val in pairs)
     value_to_char = {}
@@ -289,10 +302,12 @@ def enrich_with_characteristics(pairs: list, llm) -> list:
         triples.append((term, char, value))
     return triples
 
-
+# =============================================
+# 8. ОСНОВНОЙ ПАЙПЛАЙН
+# =============================================
 def run_pipeline(folder: str, model: str, api_key: str,
-                text_col: Optional[str] = None, id_col: Optional[str] = None,
-                timeout: int = 300):
+                 text_col: Optional[str] = None, id_col: Optional[str] = None,
+                 timeout: int = 300):
     llm = CloudRuAdapter(api_key=api_key, model=model, timeout=timeout)
     os.makedirs(folder, exist_ok=True)
 
@@ -327,26 +342,32 @@ def run_pipeline(folder: str, model: str, api_key: str,
 
     return data, all_pairs, enriched
 
-
+# =============================================
+# 9. STREAMLIT ИНТЕРФЕЙС
+# =============================================
 st.set_page_config(page_title="Медицинский парсер", layout="centered")
 st.title("🏥 Преобразование медицинских записей в датасет")
-st.markdown("Загрузите файлы (Excel, Word, TXT). Колонки определяются автоматически, но вы можете их уточнить.")
+st.markdown("Загрузите файлы (Excel, Word, TXT). Колонки определяются автоматически, но вы можете уточнить.")
 
+# Ключ — если не найден в секретах, просим ввести
 if CLOUD_RU_API_KEY is None:
     api_key_input = st.text_input("Введите ваш API-ключ Cloud.ru", type="password")
 else:
     api_key_input = CLOUD_RU_API_KEY
     st.success("🔑 API-ключ загружен из секретов")
 
+# Загрузка файлов
 uploaded_files = st.file_uploader(
     "Выберите файлы",
     accept_multiple_files=True,
     type=['xlsx', 'docx', 'txt']
 )
 
+# Переменные для ручного выбора колонок
 text_col = None
 id_col = None
 
+# Если загружены файлы, показываем выбор колонок для первого xlsx
 if uploaded_files:
     xlsx_files = [f for f in uploaded_files if f.name.endswith('.xlsx')]
     if xlsx_files:
@@ -354,15 +375,15 @@ if uploaded_files:
             df_sample = pd.read_excel(xlsx_files[0], nrows=1)
             headers = df_sample.columns.tolist()
             if headers:
-                temp_text_col = detect_text_column(headers, df_sample)
-                temp_id_col = detect_id_column(headers, df_sample, temp_text_col)
+                temp_text = detect_text_column(headers, df_sample)
+                temp_id = detect_id_column(headers, df_sample, temp_text)
                 st.write("Выберите колонки для обработки (или оставьте автоопределение):")
                 col1, col2 = st.columns(2)
                 with col1:
                     text_col = st.selectbox(
                         "Колонка с текстом (описаниями):",
                         options=["(автоопределение)"] + headers,
-                        index=0 if temp_text_col is None else headers.index(temp_text_col) + 1
+                        index=0 if temp_text is None else headers.index(temp_text) + 1
                     )
                     if text_col == "(автоопределение)":
                         text_col = None
@@ -370,21 +391,21 @@ if uploaded_files:
                     id_col = st.selectbox(
                         "Колонка с ID пациента (если есть):",
                         options=["(автоопределение)"] + headers,
-                        index=0 if temp_id_col is None else headers.index(temp_id_col) + 1
+                        index=0 if temp_id is None else headers.index(temp_id) + 1
                     )
                     if id_col == "(автоопределение)":
                         id_col = None
         except Exception as e:
-            st.warning(f"Не удалось прочитать заголовки из файла {xlsx_files[0].name}: {e}")
-    else:
-        st.info("Для файлов Word и TXT выбор колонок не требуется, используется автоопределение.")
+            st.warning(f"Не удалось прочитать заголовки: {e}")
 
+# Кнопка запуска
 if st.button("Обработать"):
     if not api_key_input:
         st.error("Пожалуйста, введите API-ключ.")
     elif not uploaded_files:
-        st.error("Пожалуйста, загрузите хотя бы один файл.")
+        st.error("Загрузите хотя бы один файл.")
     else:
+        # Подготовка папки input
         input_dir = "input"
         os.makedirs(input_dir, exist_ok=True)
         for f in os.listdir(input_dir):
@@ -408,7 +429,7 @@ if st.button("Обработать"):
                 elif not all_pairs:
                     st.warning("Не найдено ни одной пары (термин-значение). Возможно, текст не содержит медицинских терминов.")
                 else:
-                    # Сохраняем Excel в память
+                    # Создаём Excel в памяти
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         pd.DataFrame(data).to_excel(writer, sheet_name='Исходные записи', index=False)
