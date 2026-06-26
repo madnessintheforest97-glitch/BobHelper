@@ -1,7 +1,21 @@
 # =============================================
-# 1. ИМПОРТЫ И НАСТРОЙКА
+# 0. ПРИНУДИТЕЛЬНАЯ УСТАНОВКА КОДИРОВКИ UTF-8
 # =============================================
+import sys
+import io
 import os
+
+os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"
+
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+# =============================================
+# 1. ИМПОРТЫ
+# =============================================
 import re
 import json
 from typing import List, Dict, Optional
@@ -14,12 +28,9 @@ from openpyxl import load_workbook
 from openai import OpenAI
 
 # =============================================
-# 2. ПОЛУЧЕНИЕ API-КЛЮЧА (из секретов Hugging Face)
+# 2. ПОЛУЧЕНИЕ API-КЛЮЧА
 # =============================================
-try:
-    CLOUD_RU_API_KEY = st.secrets["CLOUD_RU_API_KEY"]
-except:
-    CLOUD_RU_API_KEY = None
+CLOUD_RU_API_KEY = os.getenv("CLOUD_RU_API_KEY")  # для Hugging Face Secrets
 
 # =============================================
 # 3. АВТООПРЕДЕЛЕНИЕ КОЛОНОК
@@ -76,7 +87,7 @@ def detect_id_column(headers: List[str], df_sample: pd.DataFrame, text_col: Opti
     return None
 
 # =============================================
-# 4. ФУНКЦИИ ЧТЕНИЯ ФАЙЛОВ (с автоопределением)
+# 4. ФУНКЦИИ ЧТЕНИЯ ФАЙЛОВ
 # =============================================
 def read_docx(file_path: str, text_col: Optional[str] = None, id_col: Optional[str] = None) -> List[Dict]:
     doc = Document(file_path)
@@ -223,7 +234,7 @@ class CloudRuAdapter:
         return response.choices[0].message.content
 
 # =============================================
-# 6. ИЗВЛЕЧЕНИЕ ПАР (термин → значение)
+# 6. ИЗВЛЕЧЕНИЕ ПАР (с защитой от ошибок)
 # =============================================
 def extract_pairs(text: str, llm) -> list:
     if len(text) > 1500:
@@ -246,7 +257,6 @@ def extract_pairs(text: str, llm) -> list:
     try:
         data = json.loads(content)
     except:
-        # Если JSON невалидный, пытаемся извлечь массив через регулярку
         match = re.search(r'\[.*\]', content, re.DOTALL)
         if match:
             try:
@@ -259,7 +269,12 @@ def extract_pairs(text: str, llm) -> list:
         data = data["terms"]
     if not isinstance(data, list):
         data = []
-    return data
+    # Принудительно приводим к списку из двух элементов
+    filtered = []
+    for item in data:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            filtered.append([item[0], item[1]])
+    return filtered
 
 # =============================================
 # 7. ДОБАВЛЕНИЕ ХАРАКТЕРИСТИК
@@ -318,13 +333,17 @@ def run_pipeline(folder: str, model: str, api_key: str,
     all_pairs = []
     for rec in data:
         pairs = extract_pairs(rec['text'], llm)
-        all_pairs.extend([{
-            'term': t,
-            'value': v,
-            'source': rec['source'],
-            'source_text': rec['text'],
-            'patient_id': rec.get('patient_id')
-        } for t, v in pairs])
+        if not pairs:
+            continue
+        for item in pairs:
+            t, v = item[0], item[1]
+            all_pairs.append({
+                'term': t,
+                'value': v,
+                'source': rec['source'],
+                'source_text': rec['text'],
+                'patient_id': rec.get('patient_id')
+            })
     if not all_pairs:
         return data, [], []
 
@@ -349,12 +368,12 @@ st.set_page_config(page_title="Медицинский парсер", layout="cen
 st.title("🏥 Преобразование медицинских записей в датасет")
 st.markdown("Загрузите файлы (Excel, Word, TXT). Колонки определяются автоматически, но вы можете уточнить.")
 
-# Ключ — если не найден в секретах, просим ввести
-if CLOUD_RU_API_KEY is None:
-    api_key_input = st.text_input("Введите ваш API-ключ Cloud.ru", type="password")
-else:
+# API-ключ
+if CLOUD_RU_API_KEY:
     api_key_input = CLOUD_RU_API_KEY
     st.success("🔑 API-ключ загружен из секретов")
+else:
+    api_key_input = st.text_input("Введите ваш API-ключ Cloud.ru", type="password")
 
 # Загрузка файлов
 uploaded_files = st.file_uploader(
@@ -363,11 +382,9 @@ uploaded_files = st.file_uploader(
     type=['xlsx', 'docx', 'txt']
 )
 
-# Переменные для ручного выбора колонок
 text_col = None
 id_col = None
 
-# Если загружены файлы, показываем выбор колонок для первого xlsx
 if uploaded_files:
     xlsx_files = [f for f in uploaded_files if f.name.endswith('.xlsx')]
     if xlsx_files:
@@ -398,14 +415,12 @@ if uploaded_files:
         except Exception as e:
             st.warning(f"Не удалось прочитать заголовки: {e}")
 
-# Кнопка запуска
 if st.button("Обработать"):
     if not api_key_input:
         st.error("Пожалуйста, введите API-ключ.")
     elif not uploaded_files:
         st.error("Загрузите хотя бы один файл.")
     else:
-        # Подготовка папки input
         input_dir = "input"
         os.makedirs(input_dir, exist_ok=True)
         for f in os.listdir(input_dir):
@@ -429,7 +444,6 @@ if st.button("Обработать"):
                 elif not all_pairs:
                     st.warning("Не найдено ни одной пары (термин-значение). Возможно, текст не содержит медицинских терминов.")
                 else:
-                    # Создаём Excel в памяти
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         pd.DataFrame(data).to_excel(writer, sheet_name='Исходные записи', index=False)
