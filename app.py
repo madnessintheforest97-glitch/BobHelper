@@ -1,17 +1,17 @@
 # =============================================
-# 0. ПРИНУДИТЕЛЬНАЯ УСТАНОВКА КОДИРОВКИ UTF-8
+# 0. УСТАНОВКА КОДИРОВКИ UTF-8 (безопасно)
 # =============================================
-import sys
-import io
 import os
+import sys
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["PYTHONUTF8"] = "1"
 
-if hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-if hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# Пытаемся переконфигурировать stdout, если это возможно (не в Streamlit Cloud)
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError, TypeError):
+    pass  # просто игнорируем, если не получилось
 
 # =============================================
 # 1. ИМПОРТЫ
@@ -30,7 +30,7 @@ from openai import OpenAI
 # =============================================
 # 2. ПОЛУЧЕНИЕ API-КЛЮЧА
 # =============================================
-CLOUD_RU_API_KEY = os.getenv("CLOUD_RU_API_KEY")  # для Hugging Face Secrets
+CLOUD_RU_API_KEY = os.getenv("CLOUD_RU_API_KEY")  # для Hugging Face и Streamlit Cloud Secrets
 
 # =============================================
 # 3. АВТООПРЕДЕЛЕНИЕ КОЛОНОК
